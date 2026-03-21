@@ -65,7 +65,7 @@ jobs:
           sudo apt-get install -y p7zip-full
           # 直接压缩整个文件夹 (包含文件夹本身)
           # 7z a -t7z "${{ steps.vars.outputs.filename }}" "${{ steps.vars.outputs.repo_name }}" -xr'!.git'
-          7z a -t7z "${{ steps.vars.outputs.filename }}" "${{ steps.vars.outputs.repo_name }}"
+          7z a -t7z -mx=9 -m0=lzma2 -md=64m -mfb=64 -ms=on "${{ steps.vars.outputs.filename }}" "${{ steps.vars.outputs.repo_name }}"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4.4.3
