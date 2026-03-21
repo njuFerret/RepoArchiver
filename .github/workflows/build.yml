@@ -15,10 +15,10 @@ jobs:
     name: Extract and Compress
     runs-on: ubuntu-latest
     outputs:
-      target_url: ${{ steps.vars.outputs.target_url }}
       repo_name: ${{ steps.vars.outputs.repo_name }}
       date: ${{ steps.vars.outputs.date }}
       filename: ${{ steps.vars.outputs.filename }}
+      target_url: ${{ steps.vars.outputs.target_url }}
       clone_status: ${{ steps.clone.outcome }}
 
     steps:
@@ -27,22 +27,20 @@ jobs:
         run: |
           DATE=$(date +'%Y-%m-%d')
           
-          # 判断触发方式并提取 URL
+          # 1. 提取 URL
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             TARGET_URL="${{ github.event.inputs.repo_url }}"
           else
-            # 从提交日志 (Commit Message) 中提取第一个匹配的 GitHub URL
             COMMIT_MSG="${{ github.event.head_commit.message }}"
             TARGET_URL=$(echo "$COMMIT_MSG" | grep -oP 'https://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+' | head -n 1)
           fi
 
-          # 如果最终没有提取到 URL，则报错退出
           if [ -z "$TARGET_URL" ]; then
-            echo "::error::未在日志中找到有效的 GitHub URL。请确保日志包含 https://github.com/user/repo"
+            echo "::error::未找到有效的 GitHub URL。"
             exit 1
           fi
 
-          # 提取纯仓库名
+          # 2. 提取库名称 (例如: 从 https://github.com/user/my-repo 提取 my-repo)
           REPO_NAME=$(echo "$TARGET_URL" | sed 's/.*\///;s/\.git$//')
           FILENAME="${REPO_NAME}_${DATE}.7z"
 
@@ -50,24 +48,23 @@ jobs:
           echo "repo_name=$REPO_NAME" >> $GITHUB_OUTPUT
           echo "date=$DATE" >> $GITHUB_OUTPUT
           echo "filename=$FILENAME" >> $GITHUB_OUTPUT
+          
+          echo ">>> Target URL: $TARGET_URL"
+          echo ">>> Repository Name: $REPO_NAME"
 
-          echo "--------------------------------------------------"
-          echo "Detected URL: $TARGET_URL"
-          echo "Target File: $FILENAME"
-          echo "--------------------------------------------------"
-
-      - name: Clone Remote Repository
+      - name: Clone Repository
         id: clone
         continue-on-error: true
         run: |
-          git clone --depth 1 ${{ steps.vars.outputs.target_url }} ./target_repo
+          # 使用库名作为文件夹名称进行克隆
+          git clone --depth 1 ${{ steps.vars.outputs.target_url }} "${{ steps.vars.outputs.repo_name }}"
 
-      - name: Compress to 7z
+      - name: Compress Folder
         if: steps.clone.outcome == 'success'
         run: |
           sudo apt-get install -y p7zip-full
-          # 7z a -t7z "${{ steps.vars.outputs.filename }}" ./target_repo/* -xr'!.git'
-          7z a -t7z "${{ steps.vars.outputs.filename }}" ./target_repo
+          # 直接压缩整个文件夹 (包含文件夹本身)
+          7z a -t7z "${{ steps.vars.outputs.filename }}" "${{ steps.vars.outputs.repo_name }}" -xr'!.git'
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4.4.3
@@ -96,10 +93,9 @@ jobs:
           tag_name: ${{ needs.build.outputs.date }}
           name: "Archive: ${{ needs.build.outputs.repo_name }} (${{ needs.build.outputs.date }})"
           body: |
-            ### 归档报告
+            ### 归档成功
             - **源仓库**: ${{ needs.build.outputs.target_url }}
             - **打包日期**: ${{ needs.build.outputs.date }}
-            - **提取来源**: ${{ github.event_name == 'push' && 'Commit Message' || 'Manual Input' }}
           make_latest: true
 
       - name: Post Error Release
@@ -108,4 +104,4 @@ jobs:
         with:
           tag_name: "url_error_${{ github.run_id }}"
           name: "Error: Clone Failed"
-          body: "无法连接到从日志中提取的 URL: `${{ needs.build.outputs.target_url }}`"
+          body: "无法克隆目标仓库: `${{ needs.build.outputs.target_url }}`"
