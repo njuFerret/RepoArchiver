@@ -1,18 +1,21 @@
 name: Remote Repo Archiver
 
 on:
+  push:
+    branches: [main, master]
+    tags-ignore: ['*']
   workflow_dispatch:
     inputs:
       repo_url:
-        description: '请输入要检出的 GitHub 仓库 URL'
-        required: true
-        default: ''
+        description: '手动输入仓库 URL'
+        required: false
 
 jobs:
   build:
-    name: Build and Compress
+    name: Extract and Compress
     runs-on: ubuntu-latest
     outputs:
+      target_url: ${{ steps.vars.outputs.target_url }}
       repo_name: ${{ steps.vars.outputs.repo_name }}
       date: ${{ steps.vars.outputs.date }}
       filename: ${{ steps.vars.outputs.filename }}
@@ -23,39 +26,58 @@ jobs:
         id: vars
         run: |
           DATE=$(date +'%Y-%m-%d')
-          # 提取仓库名：处理 https://github.com/user/repo 这种格式
-          REPO_NAME=$(echo "${{ github.event.inputs.repo_url }}" | sed 's/.*\///;s/\.git$//')
-          echo "date=$DATE" >> $GITHUB_OUTPUT
+          
+          # 判断触发方式并提取 URL
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            TARGET_URL="${{ github.event.inputs.repo_url }}"
+          else
+            # 从提交日志 (Commit Message) 中提取第一个匹配的 GitHub URL
+            COMMIT_MSG="${{ github.event.head_commit.message }}"
+            TARGET_URL=$(echo "$COMMIT_MSG" | grep -oP 'https://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+' | head -n 1)
+          fi
+
+          # 如果最终没有提取到 URL，则报错退出
+          if [ -z "$TARGET_URL" ]; then
+            echo "::error::未在日志中找到有效的 GitHub URL。请确保日志包含 https://github.com/user/repo"
+            exit 1
+          fi
+
+          # 提取纯仓库名
+          REPO_NAME=$(echo "$TARGET_URL" | sed 's/.*\///;s/\.git$//')
+          FILENAME="${REPO_NAME}_${DATE}.7z"
+
+          echo "target_url=$TARGET_URL" >> $GITHUB_OUTPUT
           echo "repo_name=$REPO_NAME" >> $GITHUB_OUTPUT
-          echo "filename=${REPO_NAME}_${DATE}.7z" >> $GITHUB_OUTPUT
+          echo "date=$DATE" >> $GITHUB_OUTPUT
+          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
+
+          echo "--------------------------------------------------"
+          echo "Detected URL: $TARGET_URL"
+          echo "Target File: $FILENAME"
+          echo "--------------------------------------------------"
 
       - name: Clone Remote Repository
         id: clone
         continue-on-error: true
         run: |
-          git clone --depth 1 ${{ github.event.inputs.repo_url }} ./target_repo
+          git clone --depth 1 ${{ steps.vars.outputs.target_url }} ./target_repo
 
       - name: Compress to 7z
         if: steps.clone.outcome == 'success'
         run: |
           sudo apt-get install -y p7zip-full
-          # 压缩目标文件夹内容，排除 .git 目录
           7z a -t7z "${{ steps.vars.outputs.filename }}" ./target_repo/* -xr'!.git'
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4.4.3
         with:
           name: archive-payload
-          # 即使失败也上传，用于后续判断
-          path: |
-            *.7z
-          if-no-files-found: warn
+          path: "*.7z"
 
   release:
     name: Create Release
     needs: [build]
     runs-on: ubuntu-latest
-    # 核心设置：通过声明权限免去手动设置 Token 的麻烦
     permissions:
       contents: write
 
@@ -65,7 +87,6 @@ jobs:
         with:
           name: archive-payload
 
-      # 场景 1：成功时发布压缩包
       - name: Upload to Release
         if: needs.build.outputs.clone_status == 'success'
         uses: softprops/action-gh-release@v2
@@ -74,18 +95,16 @@ jobs:
           tag_name: ${{ needs.build.outputs.date }}
           name: "Archive: ${{ needs.build.outputs.repo_name }} (${{ needs.build.outputs.date }})"
           body: |
-            ### 归档成功
-            - **源仓库**: ${{ github.event.inputs.repo_url }}
+            ### 归档报告
+            - **源仓库**: ${{ needs.build.outputs.target_url }}
             - **打包日期**: ${{ needs.build.outputs.date }}
-            - **格式**: 7z (Standard)
+            - **提取来源**: ${{ github.event_name == 'push' && 'Commit Message' || 'Manual Input' }}
+          make_latest: true
 
-      # 场景 2：URL 无效或克隆失败时发布错误提示
-      - name: Post URL Error Release
+      - name: Post Error Release
         if: needs.build.outputs.clone_status == 'failure'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "url_error_${{ github.run_id }}"
-          name: "Error: Invalid URL or Private Repo"
-          body: |
-            无法检出指定的 URL: `${{ github.event.inputs.repo_url }}`
-            请确认 URL 是否正确且该仓库为公开仓库。
+          name: "Error: Clone Failed"
+          body: "无法连接到从日志中提取的 URL: `${{ needs.build.outputs.target_url }}`"
