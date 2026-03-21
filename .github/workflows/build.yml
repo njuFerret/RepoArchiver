@@ -66,7 +66,8 @@ jobs:
         if: steps.clone.outcome == 'success'
         run: |
           sudo apt-get install -y p7zip-full
-          7z a -t7z "${{ steps.vars.outputs.filename }}" ./target_repo/* -xr'!.git'
+          # 7z a -t7z "${{ steps.vars.outputs.filename }}" ./target_repo/* -xr'!.git'
+          7z a -t7z "${{ steps.vars.outputs.filename }}" ./target_repo'
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4.4.3
